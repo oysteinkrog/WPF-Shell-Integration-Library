@@ -1086,7 +1086,12 @@ namespace Microsoft.Windows.Shell
                     cyBottomHeight = (int)Math.Ceiling(deviceGlassThickness.Bottom)
                 };
 
-                NativeMethods.DwmExtendFrameIntoClientArea(_hwnd, ref dwmMargin);
+                // DwmExtendFrameIntoClientArea may fail due to a race condition (bug found/triggered on win7 and e.g. bf3)
+                try
+                {
+                    NativeMethods.DwmExtendFrameIntoClientArea(_hwnd, ref dwmMargin);
+                }
+                catch { }
             }
         }
 
@@ -1209,9 +1214,14 @@ namespace Microsoft.Windows.Shell
 
             if (NativeMethods.DwmIsCompositionEnabled())
             {
-                // If glass is enabled, push it back to the normal bounds.
-                var dwmMargin = new MARGINS();
-                NativeMethods.DwmExtendFrameIntoClientArea(_hwnd, ref dwmMargin);
+                // DwmExtendFrameIntoClientArea may fail due to a race condition (bug found/triggered on win7 and e.g. bf3)
+                try
+                {
+                    // If glass is enabled, push it back to the normal bounds.
+                    var dwmMargin = new MARGINS();
+                    NativeMethods.DwmExtendFrameIntoClientArea(_hwnd, ref dwmMargin);
+                }
+                catch { }
             }
         }
 
