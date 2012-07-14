@@ -2,13 +2,13 @@
     Copyright Microsoft Corporation. All Rights Reserved.
 \**************************************************************************/
 
+using System.Runtime.InteropServices;
+
 namespace Microsoft.Windows.Shell
 {
     using System;
     using System.Collections.Generic;
     using System.Diagnostics.CodeAnalysis;
-    using System.Runtime.InteropServices;
-    using System.Threading;
     using System.Windows;
     using System.Windows.Interop;
     using System.Windows.Media;
@@ -40,9 +40,6 @@ namespace Microsoft.Windows.Shell
         private bool _isUserResizing = false;
         private bool _hasUserMovedWindow = false;
         private Point _windowPosAtStartOfUserMove = default(Point);
-
-        // Field to track attempts to force off Device Bitmaps on Win7.
-        private int _blackGlassFixupAttemptCount;
 
         /// <summary>Object that describes the current modifications being made to the chrome.</summary>
         private WindowChrome _chromeInfo;
@@ -226,7 +223,7 @@ namespace Microsoft.Windows.Shell
                 // actually being applied, so we asynchronously post the fixup operation
                 // at Loaded priority, so it's expected that the visual tree will be
                 // updated before _FixupFrameworkIssues is called.
-                _window.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, (_Action)_FixupFrameworkIssues);
+                _window.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, (_Action)_FixupTemplateIssues);
             }
         }
 
@@ -250,136 +247,13 @@ namespace Microsoft.Windows.Shell
                 _isHooked = true;
             }
 
-            _FixupFrameworkIssues();
+            _FixupTemplateIssues();
 
             // Force this the first time.
             _UpdateSystemMenu(_window.WindowState);
             _UpdateFrameState(true);
 
             NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero, 0, 0, 0, 0, _SwpFlags);
-        }
-
-        private void _FixupFrameworkIssues()
-        {
-            Assert.IsNotNull(_chromeInfo);
-            Assert.IsNotNull(_window);
-
-            // This margin is only necessary if the client rect is going to be calculated incorrectly by WPF.
-            // This bug was fixed in V4 of the framework.
-            if (!Utility.IsPresentationFrameworkVersionLessThan4)
-            {
-                return;
-            }
-
-            if (_window.Template == null)
-            {
-                // Nothing to fixup yet.  This will get called again when a template does get set.
-                return;
-            }
-
-            // Guard against the visual tree being empty.
-            if (VisualTreeHelper.GetChildrenCount(_window) == 0)
-            {
-                // The template isn't null, but we don't have a visual tree.
-                // Hope that ApplyTemplate is in the queue and repost this, because there's not much we can do right now.
-                _window.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, (_Action)_FixupFrameworkIssues);
-                return;
-            }
-
-            var rootElement = (FrameworkElement)VisualTreeHelper.GetChild(_window, 0);
-
-            RECT rcWindow = NativeMethods.GetWindowRect(_hwnd);
-            RECT rcAdjustedClient = _GetAdjustedWindowRect(rcWindow);
-
-            Rect rcLogicalWindow = DpiHelper.DeviceRectToLogical(new Rect(rcWindow.Left, rcWindow.Top, rcWindow.Width, rcWindow.Height));
-            Rect rcLogicalClient = DpiHelper.DeviceRectToLogical(new Rect(rcAdjustedClient.Left, rcAdjustedClient.Top, rcAdjustedClient.Width, rcAdjustedClient.Height));
-
-            Thickness nonClientThickness = new Thickness(
-               rcLogicalWindow.Left - rcLogicalClient.Left,
-               rcLogicalWindow.Top - rcLogicalClient.Top,
-               rcLogicalClient.Right - rcLogicalWindow.Right,
-               rcLogicalClient.Bottom - rcLogicalWindow.Bottom);
-
-            rootElement.Margin = new Thickness(
-                0,
-                0,
-                -(nonClientThickness.Left + nonClientThickness.Right),
-                -(nonClientThickness.Top + nonClientThickness.Bottom));
-
-            // The negative thickness on the margin doesn't properly get applied in RTL layouts.
-            // The width is right, but there is a black bar on the right.
-            // To fix this we just add an additional RenderTransform to the root element.
-            // This works fine, but if the window is dynamically changing its FlowDirection then this can have really bizarre side effects.
-            // This will mostly work if the FlowDirection is dynamically changed, but there aren't many real scenarios that would call for
-            // that so I'm not addressing the rest of the quirkiness.
-            if (_window.FlowDirection == FlowDirection.RightToLeft)
-            {
-                rootElement.RenderTransform = new MatrixTransform(1, 0, 0, 1, -(nonClientThickness.Left + nonClientThickness.Right), 0);
-            }
-            else
-            {
-                rootElement.RenderTransform = null;
-            }
-
-            if (!_isFixedUp)
-            {
-                _hasUserMovedWindow = false;
-                _window.StateChanged += _FixupRestoreBounds;
-
-                _isFixedUp = true;
-            }
-        }
-
-        // There was a regression in DWM in Windows 7 with regard to handling WM_NCCALCSIZE to effect custom chrome.
-        // When windows with glass are maximized on a multimonitor setup the glass frame tends to turn black.
-        // Also when windows are resized they tend to flicker black, sometimes staying that way until resized again.
-        //
-        // This appears to be a bug in DWM related to device bitmap optimizations.  At least on RTM Win7 we can
-        // evoke a legacy code path that bypasses the bug by calling an esoteric DWM function.  This doesn't affect
-        // the system, just the application.
-        // WPF also tends to call this function anyways during animations, so we're just forcing the issue
-        // consistently and a bit earlier.
-        [SuppressMessage("Microsoft.Design", "CA1031:DoNotCatchGeneralExceptionTypes")]
-        private void _FixupWindows7Issues()
-        {
-            if (_blackGlassFixupAttemptCount > 5)
-            {
-                // Don't keep trying if there's an endemic problem with this.
-                return;
-            }
-
-            if (Utility.IsOSWindows7OrNewer && NativeMethods.DwmIsCompositionEnabled())
-            {
-                ++_blackGlassFixupAttemptCount;
-
-                bool success = false;
-                try
-                {
-                    DWM_TIMING_INFO? dti = NativeMethods.DwmGetCompositionTimingInfo(_hwnd);
-                    success = dti != null;
-                }
-                catch (Exception)
-                {
-                    // We aren't sure of all the reasons this could fail.
-                    // If we find new ones we should consider making the NativeMethod swallow them as well.
-                    // Since we have a limited number of retries and this method isn't actually critical, just repost.
-
-                    // Disabling this for the published code to reduce debug noise.  This will get compiled away for retail binaries anyways.
-                    //Assert.Fail(e.Message);
-                }
-
-                // NativeMethods.DwmGetCompositionTimingInfo swallows E_PENDING.
-                // If the call wasn't successful, try again later.
-                if (!success)
-                {
-                    Dispatcher.BeginInvoke(DispatcherPriority.Loaded, (_Action)_FixupWindows7Issues);
-                }
-                else
-                {
-                    // Reset this.  We will want to force this again if DWM composition changes.
-                    _blackGlassFixupAttemptCount = 0;
-                }
-            }
         }
 
         private void _FixupRestoreBounds(object sender, EventArgs e)
@@ -406,6 +280,110 @@ namespace Microsoft.Windows.Shell
                 }
             }
         }
+        private void _FixupTemplateIssues()
+        {
+            Assert.IsNotNull(_chromeInfo);
+            Assert.IsNotNull(_window);
+
+            if (_window.Template == null)
+            {
+                // Nothing to fixup yet.  This will get called again when a template does get set.
+                return;
+            }
+
+            // Guard against the visual tree being empty.
+            if (VisualTreeHelper.GetChildrenCount(_window) == 0)
+            {
+                // The template isn't null, but we don't have a visual tree.
+                // Hope that ApplyTemplate is in the queue and repost this, because there's not much we can do right now.
+                _window.Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new _Action(_FixupTemplateIssues));
+                return;
+            }
+
+            FrameworkElement rootElement = (FrameworkElement)VisualTreeHelper.GetChild(_window, 0);
+
+            Thickness templateFixupMargin = new Thickness();
+
+            if (_chromeInfo.NonClientFrameEdges != NonClientFrameEdges.None)
+            {
+                if (Utility.IsFlagSet((int) _chromeInfo.NonClientFrameEdges, 2))
+                {
+                    templateFixupMargin.Top -= SystemParameters2.Current.WindowResizeBorderThickness.Top;
+                }
+                if (Utility.IsFlagSet((int) _chromeInfo.NonClientFrameEdges, 1))
+                {
+                    templateFixupMargin.Left -= SystemParameters2.Current.WindowResizeBorderThickness.Left;
+                }
+                if (Utility.IsFlagSet((int) _chromeInfo.NonClientFrameEdges, 8))
+                {
+                    templateFixupMargin.Bottom -= SystemParameters2.Current.WindowResizeBorderThickness.Bottom;
+                }
+                if (Utility.IsFlagSet((int) _chromeInfo.NonClientFrameEdges, 4))
+                {
+                    templateFixupMargin.Right -= SystemParameters2.Current.WindowResizeBorderThickness.Right;
+                }
+            }
+
+            // This margin is only necessary if the client rect is going to be calculated incorrectly by WPF.
+            // This bug was fixed in V4 of the framework.
+            if (Utility.IsPresentationFrameworkVersionLessThan4)
+            {
+                RECT rcWindow = NativeMethods.GetWindowRect(_hwnd);
+                RECT rcAdjustedClient = _GetAdjustedWindowRect(rcWindow);
+
+                Rect rcLogicalWindow = DpiHelper.DeviceRectToLogical(new Rect(rcWindow.Left, rcWindow.Top, rcWindow.Width, rcWindow.Height));
+                Rect rcLogicalClient = DpiHelper.DeviceRectToLogical(new Rect(rcAdjustedClient.Left, rcAdjustedClient.Top, rcAdjustedClient.Width, rcAdjustedClient.Height));
+
+                if (!Utility.IsFlagSet((int) _chromeInfo.NonClientFrameEdges, 1))
+                {
+                    templateFixupMargin.Right -= SystemParameters2.Current.WindowResizeBorderThickness.Left;
+                }
+                if (!Utility.IsFlagSet((int) _chromeInfo.NonClientFrameEdges, 4))
+                {
+                    templateFixupMargin.Right -= SystemParameters2.Current.WindowResizeBorderThickness.Right;
+                }
+                if (!Utility.IsFlagSet((int) _chromeInfo.NonClientFrameEdges, 2))
+                {
+                    templateFixupMargin.Bottom -= SystemParameters2.Current.WindowResizeBorderThickness.Top;
+                }
+                if (!Utility.IsFlagSet((int) _chromeInfo.NonClientFrameEdges, 8))
+                {
+                    templateFixupMargin.Bottom -= SystemParameters2.Current.WindowResizeBorderThickness.Bottom;
+                }
+                templateFixupMargin.Bottom -= SystemParameters2.Current.WindowCaptionHeight;
+
+                // The negative thickness on the margin doesn't properly get applied in RTL layouts.
+                // The width is right, but there is a black bar on the right.
+                // To fix this we just add an additional RenderTransform to the root element.
+                // This works fine, but if the window is dynamically changing its FlowDirection then this can have really bizarre side effects.
+                // This will mostly work if the FlowDirection is dynamically changed, but there aren't many real scenarios that would call for
+                // that so I'm not addressing the rest of the quirkiness.
+                if (_window.FlowDirection == FlowDirection.RightToLeft)
+                {
+                    Thickness nonClientThickness = new Thickness(
+                        rcLogicalWindow.Left - rcLogicalClient.Left,
+                        rcLogicalWindow.Top - rcLogicalClient.Top,
+                        rcLogicalClient.Right - rcLogicalWindow.Right,
+                        rcLogicalClient.Bottom - rcLogicalWindow.Bottom);
+
+                    rootElement.RenderTransform = new MatrixTransform(1.0, 0.0, 0.0, 1.0,
+                                                                 -(nonClientThickness.Left + nonClientThickness.Right),
+                                                                 0.0);
+                }
+                else
+                {
+                    rootElement.RenderTransform = null;
+                }
+            }
+
+            rootElement.Margin = templateFixupMargin;
+            if (Utility.IsPresentationFrameworkVersionLessThan4 && !_isFixedUp)
+            {
+                _hasUserMovedWindow = false;
+                _window.StateChanged += _FixupRestoreBounds;
+                _isFixedUp = true;
+            }
+        }
 
         private RECT _GetAdjustedWindowRect(RECT rcWindow)
         {
@@ -416,6 +394,23 @@ namespace Microsoft.Windows.Shell
             var exstyle = (WS_EX)NativeMethods.GetWindowLongPtr(_hwnd, GWL.EXSTYLE);
 
             return NativeMethods.AdjustWindowRectEx(rcWindow, style, false, exstyle);
+        }
+
+        private HT _GetHTFromResizeGripDirection(ResizeGripDirection direction)
+        {
+            bool compliment = _window.FlowDirection == FlowDirection.RightToLeft;
+            switch (direction)
+            {
+                case ResizeGripDirection.TopLeft: return (compliment ? HT.TOPRIGHT : HT.TOPLEFT);
+                case ResizeGripDirection.Top: return HT.TOP;
+                case ResizeGripDirection.TopRight: return (compliment ? HT.TOPLEFT : HT.TOPRIGHT);
+                case ResizeGripDirection.Right: return (compliment ? HT.LEFT : HT.RIGHT);
+                case ResizeGripDirection.BottomRight: return (compliment ? HT.BOTTOMLEFT : HT.BOTTOMRIGHT);
+                case ResizeGripDirection.Bottom: return HT.BOTTOM;
+                case ResizeGripDirection.BottomLeft: return (compliment ? HT.BOTTOMRIGHT : HT.BOTTOMLEFT);
+                case ResizeGripDirection.Left: return (compliment ? HT.RIGHT : HT.LEFT);
+            }
+            return HT.NOWHERE;
         }
 
         // Windows tries hard to hide this state from applications.
@@ -501,50 +496,66 @@ namespace Microsoft.Windows.Shell
             // Since we always want the client size to equal the window size, we can unconditionally handle it
             // without having to modify the parameters.
 
+            if (_chromeInfo.NonClientFrameEdges != NonClientFrameEdges.None)
+            {
+                Thickness windowResizeBorderThicknessDevice = DpiHelper.LogicalThicknessToDevice(SystemParameters2.Current.WindowResizeBorderThickness);
+                RECT rcClientArea = (RECT)Marshal.PtrToStructure(lParam, typeof(RECT));
+                if (Utility.IsFlagSet((int)_chromeInfo.NonClientFrameEdges, (int)NonClientFrameEdges.Top))
+                {
+                    rcClientArea.Top += (int)windowResizeBorderThicknessDevice.Top;
+                }
+                if (Utility.IsFlagSet((int)_chromeInfo.NonClientFrameEdges, (int)NonClientFrameEdges.Left))
+                {
+                    rcClientArea.Left += (int)windowResizeBorderThicknessDevice.Left;
+                }
+                if (Utility.IsFlagSet((int)_chromeInfo.NonClientFrameEdges, (int)NonClientFrameEdges.Bottom))
+                {
+                    rcClientArea.Bottom -= (int)windowResizeBorderThicknessDevice.Bottom;
+                }
+                if (Utility.IsFlagSet((int)_chromeInfo.NonClientFrameEdges, (int)NonClientFrameEdges.Right))
+                {
+                    rcClientArea.Right -= (int)windowResizeBorderThicknessDevice.Right;
+                }
+                Marshal.StructureToPtr(rcClientArea, lParam, false);
+            }
             handled = true;
-            return new IntPtr((int)WVR.REDRAW);
+            return new IntPtr((int)WVR.REDRAW | (int)WVR.VALIDRECTS);
         }
 
         private IntPtr _HandleNCHitTest(WM uMsg, IntPtr wParam, IntPtr lParam, out bool handled)
         {
-            IntPtr lRet = IntPtr.Zero;
-            handled = false;
-
-            // Give DWM a chance at this first.
-            if (Utility.IsOSVistaOrNewer && _chromeInfo.GlassFrameThickness != default(Thickness) && _isGlassEnabled)
+            Point mousePosScreen = new Point(Utility.GET_X_LPARAM(lParam), Utility.GET_Y_LPARAM(lParam));
+            Rect windowPosition = _GetWindowRect();
+            Point mousePosWindow = mousePosScreen;
+            mousePosWindow.Offset(-windowPosition.X, -windowPosition.Y);
+            mousePosWindow = DpiHelper.DevicePixelsToLogical(mousePosWindow);
+            IInputElement inputElement = _window.InputHitTest(mousePosWindow);
+            if (inputElement != null)
             {
-                // If we're on Vista, give the DWM a chance to handle the message first.
-                handled = NativeMethods.DwmDefWindowProc(_hwnd, uMsg, wParam, lParam, out lRet);
-            }
-
-            // Handle letting the system know if we consider the mouse to be in our effective non-client area.
-            // If DWM already handled this by way of DwmDefWindowProc, then respect their call.
-            if (IntPtr.Zero == lRet)
-            {
-                var mousePosScreen = new Point(Utility.GET_X_LPARAM(lParam), Utility.GET_Y_LPARAM(lParam));
-                Rect windowPosition = _GetWindowRect();
-
-                HT ht = _HitTestNca(
-                    DpiHelper.DeviceRectToLogical(windowPosition),
-                    DpiHelper.DevicePixelsToLogical(mousePosScreen));
-
-                // Don't blindly respect HTCAPTION.
-                // We want UIElements in the caption area to be actionable so run through a hittest first.
-                if (ht != HT.CLIENT)
+                if (WindowChrome.GetIsHitTestVisibleInChrome(inputElement))
                 {
-                    Point mousePosWindow = mousePosScreen;
-                    mousePosWindow.Offset(-windowPosition.X, -windowPosition.Y);
-                    mousePosWindow = DpiHelper.DevicePixelsToLogical(mousePosWindow);
-                    IInputElement inputElement = _window.InputHitTest(mousePosWindow);
-                    if (inputElement != null && WindowChrome.GetIsHitTestVisibleInChrome(inputElement))
-                    {
-                        ht = HT.CLIENT;
-                    }
+                    handled = true;
+                    return new IntPtr(1);
                 }
-                handled = true;
-                lRet = new IntPtr((int)ht);
+                ResizeGripDirection direction = WindowChrome.GetResizeGripDirection(inputElement);
+                if (direction != ResizeGripDirection.None)
+                {
+                    handled = true;
+                    return new IntPtr((int)_GetHTFromResizeGripDirection(direction));
+                }
             }
-            return lRet;
+            if (_chromeInfo.UseAeroCaptionButtons && ((Utility.IsOSVistaOrNewer && (_chromeInfo.GlassFrameThickness != new Thickness())) && this._isGlassEnabled))
+            {
+                IntPtr lRet;
+                handled = NativeMethods.DwmDefWindowProc(_hwnd, uMsg, wParam, lParam, out lRet);
+                if (IntPtr.Zero != lRet)
+                {
+                    return lRet;
+                }
+            }
+            HT ht = _HitTestNca(DpiHelper.DeviceRectToLogical(windowPosition), DpiHelper.DevicePixelsToLogical(mousePosScreen));
+            handled = true;
+            return new IntPtr((int)ht);
         }
 
         private IntPtr _HandleNCRButtonUp(WM uMsg, IntPtr wParam, IntPtr lParam, out bool handled)
@@ -616,7 +627,7 @@ namespace Microsoft.Windows.Shell
             // These shouldn't be required on the v4 framework.
             Assert.IsTrue(Utility.IsPresentationFrameworkVersionLessThan4);
 
-            _FixupFrameworkIssues();
+            _FixupTemplateIssues();
 
             handled = false;
             return IntPtr.Zero;
@@ -813,8 +824,6 @@ namespace Microsoft.Windows.Shell
                 {
                     _ClearRoundingRegion();
                     _ExtendGlassFrame();
-
-                    _FixupWindows7Issues();
                 }
 
                 NativeMethods.SetWindowPos(_hwnd, IntPtr.Zero, 0, 0, 0, 0, _SwpFlags);
@@ -1042,17 +1051,39 @@ namespace Microsoft.Windows.Shell
                 // Apply the transparent background to the HWND
                 _hwndSource.CompositionTarget.BackgroundColor = Colors.Transparent;
 
-                // Thickness is going to be DIPs, need to convert to system coordinates.
-                Point deviceTopLeft = DpiHelper.LogicalPixelsToDevice(new Point(_chromeInfo.GlassFrameThickness.Left, _chromeInfo.GlassFrameThickness.Top));
-                Point deviceBottomRight = DpiHelper.LogicalPixelsToDevice(new Point(_chromeInfo.GlassFrameThickness.Right, _chromeInfo.GlassFrameThickness.Bottom));
+                Thickness deviceGlassThickness = DpiHelper.LogicalThicknessToDevice(_chromeInfo.GlassFrameThickness);
+
+                if (_chromeInfo.NonClientFrameEdges != NonClientFrameEdges.None)
+                {
+                    Thickness windowResizeBorderThicknessDevice = DpiHelper.LogicalThicknessToDevice(SystemParameters2.Current.WindowResizeBorderThickness);
+                    if (Utility.IsFlagSet((int)_chromeInfo.NonClientFrameEdges, (int)NonClientFrameEdges.Top))
+                    {
+                        deviceGlassThickness.Top -= windowResizeBorderThicknessDevice.Top;
+                        deviceGlassThickness.Top = Math.Max(0.0, deviceGlassThickness.Top);
+                    }
+                    if (Utility.IsFlagSet((int)_chromeInfo.NonClientFrameEdges, (int)NonClientFrameEdges.Left))
+                    {
+                        deviceGlassThickness.Left -= windowResizeBorderThicknessDevice.Left;
+                        deviceGlassThickness.Left = Math.Max(0.0, deviceGlassThickness.Left);
+                    }
+                    if (Utility.IsFlagSet((int)_chromeInfo.NonClientFrameEdges, (int)NonClientFrameEdges.Bottom))
+                    {
+                        deviceGlassThickness.Bottom -= windowResizeBorderThicknessDevice.Bottom;
+                        deviceGlassThickness.Bottom = Math.Max(0.0, deviceGlassThickness.Bottom);
+                    }
+                    if (Utility.IsFlagSet((int)_chromeInfo.NonClientFrameEdges, (int)NonClientFrameEdges.Right))
+                    {
+                        deviceGlassThickness.Right -= windowResizeBorderThicknessDevice.Right;
+                        deviceGlassThickness.Right = Math.Max(0.0, deviceGlassThickness.Right);
+                    }
+                }
 
                 var dwmMargin = new MARGINS
                 {
-                    // err on the side of pushing in glass an extra pixel.
-                    cxLeftWidth = (int)Math.Ceiling(deviceTopLeft.X),
-                    cxRightWidth = (int)Math.Ceiling(deviceBottomRight.X),
-                    cyTopHeight = (int)Math.Ceiling(deviceTopLeft.Y),
-                    cyBottomHeight = (int)Math.Ceiling(deviceBottomRight.Y),
+                    cxLeftWidth = (int)Math.Ceiling(deviceGlassThickness.Left),
+                    cxRightWidth = (int)Math.Ceiling(deviceGlassThickness.Right),
+                    cyTopHeight = (int)Math.Ceiling(deviceGlassThickness.Top),
+                    cyBottomHeight = (int)Math.Ceiling(deviceGlassThickness.Bottom)
                 };
 
                 NativeMethods.DwmExtendFrameIntoClientArea(_hwnd, ref dwmMargin);
@@ -1147,15 +1178,15 @@ namespace Microsoft.Windows.Shell
 
         private void _RestoreFrameworkIssueFixups()
         {
+            var rootElement = (FrameworkElement)VisualTreeHelper.GetChild(_window, 0);
+            // Undo anything that was done before.
+            rootElement.Margin = new Thickness();
+
             // This margin is only necessary if the client rect is going to be calculated incorrectly by WPF.
             // This bug was fixed in V4 of the framework.
             if (Utility.IsPresentationFrameworkVersionLessThan4)
             {
                 Assert.IsTrue(_isFixedUp);
-
-                var rootElement = (FrameworkElement)VisualTreeHelper.GetChild(_window, 0);
-                // Undo anything that was done before.
-                rootElement.Margin = new Thickness();
 
                 _window.StateChanged -= _FixupRestoreBounds;
                 _isFixedUp = false;

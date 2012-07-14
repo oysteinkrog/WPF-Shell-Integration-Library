@@ -82,5 +82,12 @@ namespace Standard
 
             return new Size(pt.X, pt.Y);
         }
+
+        public static Thickness LogicalThicknessToDevice(Thickness logicalThickness)
+        {
+            Point topLeft = LogicalPixelsToDevice(new Point(logicalThickness.Left, logicalThickness.Top));
+            Point bottomRight = LogicalPixelsToDevice(new Point(logicalThickness.Right, logicalThickness.Bottom));
+            return new Thickness(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
+        }
     }
 }

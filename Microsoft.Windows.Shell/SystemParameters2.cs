@@ -144,10 +144,11 @@ namespace Microsoft.Windows.Shell
             int frameX = NativeMethods.GetSystemMetrics(SM.CXSIZEFRAME) + NativeMethods.GetSystemMetrics(SM.CXEDGE);
             int frameY = NativeMethods.GetSystemMetrics(SM.CYSIZEFRAME) + NativeMethods.GetSystemMetrics(SM.CYEDGE);
 
-            Rect captionRect = new Rect(0, 0, captionX * 3, captionY);
-            captionRect.Offset(-frameX - captionRect.Width, frameY);
+            Rect deviceCaptionLocation = new Rect(0.0, 0.0, (captionX * 3), captionY);
+            deviceCaptionLocation.Offset(-frameX - deviceCaptionLocation.Width, frameY);
+            Rect logicalCaptionLocation = DpiHelper.DeviceRectToLogical(deviceCaptionLocation);
 
-            WindowCaptionButtonsLocation = captionRect;
+            WindowCaptionButtonsLocation = logicalCaptionLocation;
         }
 
         [SuppressMessage("Microsoft.Security", "CA2122:DoNotIndirectlyExposeMethodsWithLinkDemands")]

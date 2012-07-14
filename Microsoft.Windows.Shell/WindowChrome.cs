@@ -60,6 +60,34 @@ namespace Microsoft.Windows.Shell
             chromeWorker.SetWindowChrome(newChrome);
         }
 
+        private static readonly NonClientFrameEdges NonClientFrameEdges_All = NonClientFrameEdges.Bottom | NonClientFrameEdges.Right | NonClientFrameEdges.Top | NonClientFrameEdges.Left;
+
+        private static bool _NonClientFrameEdgesAreValid(object value)
+        {
+            var ncEdges = NonClientFrameEdges.None;
+            try
+            {
+                ncEdges = (NonClientFrameEdges)value;
+            }
+            catch (InvalidCastException)
+            {
+                return false;
+            }
+            if (ncEdges != NonClientFrameEdges.None)
+            {
+                if ((ncEdges | NonClientFrameEdges_All) != NonClientFrameEdges_All)
+                {
+                    return false;
+                }
+                if (ncEdges == NonClientFrameEdges_All)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+
         [SuppressMessage("Microsoft.Design", "CA1062:Validate arguments of public methods", MessageId = "0")]
         [SuppressMessage("Microsoft.Design", "CA1011:ConsiderPassingBaseTypesAsParameters")]
         public static WindowChrome GetWindowChrome(Window window)
@@ -106,6 +134,34 @@ namespace Microsoft.Windows.Shell
                 throw new ArgumentException("The element must be a DependencyObject", "inputElement");
             }
             dobj.SetValue(IsHitTestVisibleInChromeProperty, hitTestVisible);
+        }
+
+        public static readonly DependencyProperty ResizeGripDirectionProperty = DependencyProperty.RegisterAttached(
+            "ResizeGripDirection", 
+            typeof(ResizeGripDirection), 
+            typeof(WindowChrome), 
+            new FrameworkPropertyMetadata(ResizeGripDirection.None, FrameworkPropertyMetadataOptions.Inherits));
+
+        public static ResizeGripDirection GetResizeGripDirection(IInputElement inputElement)
+        {
+            Verify.IsNotNull(inputElement, "inputElement");
+            var dobj = inputElement as DependencyObject;
+            if (dobj == null)
+            {
+                throw new ArgumentException("The element must be a DependencyObject", "inputElement");
+            }
+            return (ResizeGripDirection)dobj.GetValue(ResizeGripDirectionProperty);
+        }
+
+        public static void SetResizeGripDirection(IInputElement inputElement, ResizeGripDirection direction)
+        {
+            Verify.IsNotNull(inputElement, "inputElement");
+            var dobj = inputElement as DependencyObject;
+            if (dobj == null)
+            {
+                throw new ArgumentException("The element must be a DependencyObject", "inputElement");
+            }
+            dobj.SetValue(ResizeGripDirectionProperty, direction);
         }
 
         #endregion
@@ -181,6 +237,47 @@ namespace Microsoft.Windows.Shell
             get { return (CornerRadius)GetValue(CornerRadiusProperty); }
             set { SetValue(CornerRadiusProperty, value); }
         }
+
+        public static readonly DependencyProperty NonClientFrameEdgesProperty = DependencyProperty.Register(
+            "NonClientFrameEdges", 
+            typeof(NonClientFrameEdges), 
+            typeof(WindowChrome), 
+            new PropertyMetadata(
+                NonClientFrameEdges.None,
+                (d, e) => ((WindowChrome) d)._OnPropertyChangedThatRequiresRepaint()), 
+                _NonClientFrameEdgesAreValid);
+
+
+        public NonClientFrameEdges NonClientFrameEdges
+        {
+            get
+            {
+                return (NonClientFrameEdges)GetValue(NonClientFrameEdgesProperty);
+            }
+            set
+            {
+                SetValue(NonClientFrameEdgesProperty, value);
+            }
+        }
+
+        public static readonly DependencyProperty UseAeroCaptionButtonsProperty = DependencyProperty.Register(
+            "UseAeroCaptionButtons",
+            typeof(bool),
+            typeof(WindowChrome), 
+            new FrameworkPropertyMetadata(true));
+
+        public bool UseAeroCaptionButtons
+        {
+            get
+            {
+                return (bool)GetValue(UseAeroCaptionButtonsProperty);
+            }
+            set
+            {
+                SetValue(UseAeroCaptionButtonsProperty, value);
+            }
+        }
+
 
         #endregion
 

@@ -108,7 +108,9 @@
     <Compile Include="JumpList.cs" />
     <Compile Include="JumpPath.cs" />
     <Compile Include="JumpTask.cs" />
+    <Compile Include="NonClientFrameEdges.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="ResizeGripDirection.cs" />
     <Compile Include="Standard\ComGuids.cs" />
     <Compile Include="Standard\Debug.cs" />
     <Compile Include="Standard\DoubleUtil.cs" />
