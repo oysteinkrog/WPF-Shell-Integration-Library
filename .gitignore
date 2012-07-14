@@ -4,3 +4,9 @@ obj
 
 # mstest test results
 TestResults
+
+_ReSharper.*
+*.ncrunchsolution
+*.ncrunchsolution.user
+*.sln.DotSettings.user
+*.suo
