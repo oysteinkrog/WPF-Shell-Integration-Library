@@ -994,10 +994,10 @@ namespace Microsoft.Windows.Shell
                     throw new InvalidOperationException("Unable to combine two HRGNs.");
                 }
             }
-            catch
+            finally
             {
+                // Delete temporary hrgn
                 Utility.SafeDeleteObject(ref hrgn);
-                throw;
             }
         }
 
